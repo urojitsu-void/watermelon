@@ -1,4 +1,4 @@
-import { resolve } from "node:path";
+import { basename, extname, resolve } from "node:path";
 import { defineConfig } from "vite";
 
 // https://vitejs.dev/config/
@@ -21,6 +21,15 @@ export default defineConfig({
 			// bundle.jsを差し替えする
 			output: {
 				entryFileNames: 'assets/bundle.js',
+				assetFileNames: (assetInfo) => {
+					const fileName = assetInfo.name ?? ""
+					const ext = extname(fileName)
+					const normalizedExt = ext || (fileName.startsWith(".") ? fileName : "")
+					const inferredName = basename(fileName, ext)
+					const normalizedName = inferredName.startsWith(".") ? "" : inferredName
+					const baseName = normalizedName || (normalizedExt === ".css" ? "style" : "asset")
+					return `assets/${baseName}-[hash]${normalizedExt}`
+				},
 			},
 		},
 	},
