@@ -104,6 +104,7 @@ export default class Game {
 	private hitAudioBuffer?: AudioBuffer;
 	private bgmAudioBuffer?: AudioBuffer;
 	private resultAudioBuffer?: AudioBuffer;
+	private activeResultAudio?: Audio;
 	private finAudioBuffer?: AudioBuffer;
 	private bgmAudio?: Audio;
 	private treeGLTF?: GLTF;
@@ -307,6 +308,15 @@ export default class Game {
 		this.clearResultFireworks();
 	};
 
+	private stopResultAudio = () => {
+		if (!this.activeResultAudio) {
+			return;
+		}
+		const sound = this.activeResultAudio;
+		this.activeResultAudio = undefined;
+		sound.stop();
+	};
+
 	private getResultMessage = (count: number) => {
 		if (count >= 15) {
 			return "伝説のスイカハンター！";
@@ -411,6 +421,23 @@ export default class Game {
 		this.camera.add(bgm);
 		bgm.play();
 		this.bgmAudio = bgm;
+	};
+
+	private pauseBGM = () => {
+		if (!this.bgmAudio || !this.bgmAudio.isPlaying) {
+			return;
+		}
+		this.bgmAudio.pause();
+	};
+
+	private resumeBGM = () => {
+		if (this.bgmAudio) {
+			if (!this.bgmAudio.isPlaying) {
+				this.bgmAudio.play();
+			}
+			return;
+		}
+		this.playBGM();
 	};
 
 	private createEnvironment = () => {
@@ -754,6 +781,8 @@ export default class Game {
 
 	private resetWatermelon = () => {
 		this.hideResultOverlay();
+		this.stopResultAudio();
+		this.resumeBGM();
 		this.clearWatermelons();
 		this.smashedWatermelonCount = 0;
 		this.updateWatermelonCounter();
@@ -1113,7 +1142,16 @@ export default class Game {
 		this.gameActive = false;
 		this.remainingTime = 0;
 		this.updateTimerDisplay();
-		this.playSound(this.resultAudioBuffer, 0.9);
+		this.pauseBGM();
+		this.stopResultAudio();
+		const resultSound = this.playSound(this.resultAudioBuffer, 0.9, () => {
+			if (this.activeResultAudio === resultSound) {
+				this.activeResultAudio = undefined;
+			}
+		});
+		if (resultSound) {
+			this.activeResultAudio = resultSound;
+		}
 		this.showResultOverlay(finalCount);
 		this.updateLocomotionAnimation(false);
 		this.swingAnimationHold = 0;
@@ -1601,9 +1639,13 @@ export default class Game {
 		return { position, target };
 	};
 
-	private playSound = (buffer?: AudioBuffer, volume = 0.9) => {
+	private playSound = (
+		buffer?: AudioBuffer,
+		volume = 0.9,
+		onEnded?: () => void,
+	): Audio | null => {
 		if (!buffer || !this.audioListener || !this.camera) {
-			return;
+			return null;
 		}
 		const sound = new Audio(buffer, this.audioListener);
 		sound.setVolume(volume);
@@ -1614,8 +1656,10 @@ export default class Game {
 			source.onended = () => {
 				this.camera.remove(sound);
 				sound.disconnect();
+				onEnded?.();
 			};
 		}
+		return sound;
 	};
 
 	private updateBrokenWatermelons = (delta: number) => {
