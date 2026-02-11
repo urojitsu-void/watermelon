@@ -5,6 +5,9 @@ import { defineConfig } from "vite";
 export default defineConfig({
 	base: "./",
 	root: "src",
+	server: {
+		port: 3000,
+	},
 	plugins: [],
 	publicDir: resolve(__dirname, "public"),
 	build: {

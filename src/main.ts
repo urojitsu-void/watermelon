@@ -22,3 +22,10 @@ async function init() {
 startButton?.addEventListener('click', () => {
 	void init()
 })
+
+const tryStartByTap = () => {
+	void init()
+}
+
+window.addEventListener('mousedown', tryStartByTap, { capture: true })
+window.addEventListener('touchstart', tryStartByTap, { capture: true, passive: true })

@@ -145,7 +145,7 @@ export default class Game {
 	private batHitOffset: Vec3 = new Vec3();
 	private brokenWatermelonPool: THREE.Group<THREE.Object3DEventMap>[] = [];
 	private brokenWatermelonHeightOffset = 0;
-	private readonly cameraFollowDistance = 85;
+	private readonly cameraFollowDistance = 62;
 	private readonly cameraElevationAngle = THREE.MathUtils.degToRad(30);
 	private treeInstances: THREE.Object3D[] = [];
 	private activeParticles: Particle[] = [];
@@ -157,10 +157,119 @@ export default class Game {
 	private readonly readyDurationMs = 2200;
 	private readonly goDurationMs = 1500;
 	private boundsHelper?: THREE.Object3D;
+	private pointerRay = new THREE.Raycaster();
+	private pointerNdc = new THREE.Vector2();
+	private moveTarget: Vec3 | null = null;
+	private attackTarget: WatermelonState | null = null;
+	private readonly attackApproachPadding = 6;
+	private readonly attackTriggerDistance = 16;
 
 	constructor(options: GameOptions = {}) {
 		this.onReady = options.onReady;
 	}
+
+	private onPointerTap = (event: MouseEvent | TouchEvent) => {
+		if (!this.camera || !this.heightMap || !this.player || !this.renderer) {
+			return;
+		}
+		if (this.resultOverlay && !this.resultOverlay.hasAttribute("hidden")) {
+			this.resetWatermelon();
+			return;
+		}
+		let clientX = 0;
+		let clientY = 0;
+		if ("touches" in event) {
+			const touch = event.touches[0] ?? event.changedTouches[0];
+			if (!touch) return;
+			clientX = touch.clientX;
+			clientY = touch.clientY;
+			event.preventDefault();
+		} else {
+			clientX = event.clientX;
+			clientY = event.clientY;
+		}
+		const rect = this.renderer.domElement.getBoundingClientRect();
+		if (rect.width <= 0 || rect.height <= 0) {
+			return;
+		}
+		this.pointerNdc.set(
+			((clientX - rect.left) / rect.width) * 2 - 1,
+			-((clientY - rect.top) / rect.height) * 2 + 1,
+		);
+		this.pointerRay.setFromCamera(this.pointerNdc, this.camera);
+
+		const watermelonHits = this.pointerRay.intersectObjects(
+			this.watermelons
+				.map((state) => state.whole)
+				.filter((mesh): mesh is THREE.Group<THREE.Object3DEventMap> => !!mesh),
+			true,
+		);
+		if (watermelonHits.length > 0) {
+			const hitState = this.findWatermelonStateFromObject(watermelonHits[0].object);
+			if (hitState?.whole) {
+				this.attackTarget = hitState;
+				this.setMoveTargetNearWatermelon(hitState);
+				if (!this.cameraFollowEnabled) {
+					this.resumeCameraFollow();
+				}
+				return;
+			}
+		}
+
+		const groundHits = this.pointerRay.intersectObject(this.heightMap, true);
+		if (groundHits.length === 0) {
+			return;
+		}
+		const hit = groundHits[0].point;
+		const targetX = THREE.MathUtils.clamp(
+			hit.x,
+			this.playerBounds.minX,
+			this.playerBounds.maxX,
+		);
+		const targetZ = THREE.MathUtils.clamp(
+			hit.z,
+			this.playerBounds.minZ,
+			this.playerBounds.maxZ,
+		);
+		const targetY = this.getGroundHeightAt(targetX, targetZ, hit.y) + 0.6;
+		this.moveTarget = new Vec3(targetX, targetY, targetZ);
+		this.attackTarget = null;
+		if (!this.cameraFollowEnabled) {
+			this.resumeCameraFollow();
+		}
+	};
+
+	private findWatermelonStateFromObject = (obj: THREE.Object3D) => {
+		let node: THREE.Object3D | null = obj;
+		while (node) {
+			for (const state of this.watermelons) {
+				if (state.whole === node) {
+					return state;
+				}
+			}
+			node = node.parent;
+		}
+		return null;
+	};
+
+	private setMoveTargetNearWatermelon = (state: WatermelonState) => {
+		if (!state.whole) {
+			return;
+		}
+		const target = state.whole.position;
+		const toPlayerX = this.player.position.x - target.x;
+		const toPlayerZ = this.player.position.z - target.z;
+		const dist = Math.hypot(toPlayerX, toPlayerZ);
+		const approach = Math.max(4, state.radius + this.attackApproachPadding + 2);
+		const dirX = dist > 0.001 ? toPlayerX / dist : Math.sin(this.playerAngle + Math.PI);
+		const dirZ = dist > 0.001 ? toPlayerZ / dist : Math.cos(this.playerAngle + Math.PI);
+		let destX = target.x + dirX * approach;
+		let destZ = target.z + dirZ * approach;
+		destX = THREE.MathUtils.clamp(destX, this.playerBounds.minX, this.playerBounds.maxX);
+		destZ = THREE.MathUtils.clamp(destZ, this.playerBounds.minZ, this.playerBounds.maxZ);
+		const destY = this.getGroundHeightAt(destX, destZ, this.player.position.y) + 0.6;
+		this.moveTarget = new Vec3(destX, destY, destZ);
+	};
 
 	init = async () => {
 		this.showLoadingOverlay();
@@ -173,7 +282,7 @@ export default class Game {
 		this.scene.fog = new THREE.Fog(0xf0f6ff, 200, 1400);
 
 		this.camera = new Camera3D(
-			new Vec3(-40, 45, 90),
+			new Vec3(-26, 36, 62),
 			new Vec3(0, 12, 20),
 			0.1,
 			1200,
@@ -183,8 +292,8 @@ export default class Game {
 		if (controls) {
 			controls.enableDamping = true;
 			controls.enablePan = false;
-			controls.minDistance = 45;
-			controls.maxDistance = 140;
+			controls.minDistance = 30;
+			controls.maxDistance = 110;
 			controls.maxPolarAngle = Math.PI / 2.1;
 			controls.target.set(0, 12, 0);
 			controls.addEventListener("start", () => {
@@ -195,6 +304,13 @@ export default class Game {
 		this.camera.add(this.audioListener);
 
 		this.keyboard = new Keyboard();
+		window.addEventListener("mousedown", this.onPointerTap as EventListener, {
+			capture: true,
+		});
+		window.addEventListener("touchstart", this.onPointerTap as EventListener, {
+			capture: true,
+			passive: false,
+		});
 		this.createHUD();
 		this.setupUI();
 		await this.loadAssets();
@@ -1201,6 +1317,21 @@ export default class Game {
 			0,
 			Math.cos(this.playerAngle),
 		);
+		const manualMove =
+			this.keyboard.isPressUp() ||
+			this.keyboard.isPressDown();
+		const manualRotate =
+			this.keyboard.isPressLeft() ||
+			this.keyboard.isPressRight();
+		if (manualMove || manualRotate) {
+			this.moveTarget = null;
+			this.attackTarget = null;
+		}
+		if (this.attackTarget?.whole) {
+			this.setMoveTargetNearWatermelon(this.attackTarget);
+		} else if (this.attackTarget && !this.attackTarget.whole) {
+			this.attackTarget = null;
+		}
 		if (this.keyboard.isPressW() || this.keyboard.isPressUp()) {
 			this.player.position.add(
 				forward.clone().multiplyScalar(this.playerSpeed * delta),
@@ -1213,6 +1344,38 @@ export default class Game {
 				forward.clone().multiplyScalar(direction * this.playerSpeed * delta),
 			);
 			moved = true;
+		}
+		if (this.moveTarget) {
+			const toX = this.moveTarget.x - this.player.position.x;
+			const toZ = this.moveTarget.z - this.player.position.z;
+			const dist = Math.hypot(toX, toZ);
+			if (dist <= 0.5) {
+				this.player.position.x = this.moveTarget.x;
+				this.player.position.z = this.moveTarget.z;
+				this.moveTarget = null;
+			} else {
+				const moveStep = this.playerSpeed * delta;
+				const ratio = Math.min(1, moveStep / dist);
+				this.player.position.x += toX * ratio;
+				this.player.position.z += toZ * ratio;
+				const lookAngle = Math.atan2(toX, toZ);
+				this.playerAngle = this.normalizeAngle(lookAngle);
+				moved = true;
+			}
+		}
+		if (
+			this.attackTarget?.whole &&
+			!this.swing.swinging &&
+			this.swing.cooldown <= 0
+		) {
+			const target = this.attackTarget.whole.position;
+			const dx = target.x - this.player.position.x;
+			const dz = target.z - this.player.position.z;
+			const dist = Math.hypot(dx, dz);
+			if (dist <= this.attackTriggerDistance) {
+				this.playerAngle = this.normalizeAngle(Math.atan2(dx, dz));
+				this.startSwing();
+			}
 		}
 
 		if ((moved || rotated) && !this.cameraFollowEnabled) {
