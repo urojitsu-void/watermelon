@@ -34,6 +34,15 @@ type GameOptions = {
 	onReady?: () => void;
 };
 
+type BrowserInputUserEventDetail = {
+	userName?: string;
+	userIconUrl?: string;
+	kind?: "click" | "key";
+	key?: string;
+	source?: "comment";
+	at?: number;
+};
+
 export default class Game {
 	private clock!: Clock;
 	private scene!: Scene;
@@ -153,6 +162,9 @@ export default class Game {
 	private overlayElement?: HTMLElement;
 	private readyOverlay?: HTMLElement;
 	private readyText?: HTMLElement;
+	private commandHistoryList?: HTMLElement;
+	private commandHistoryItems: BrowserInputUserEventDetail[] = [];
+	private readonly commandHistoryMax = 5;
 	private readySequenceId = 0;
 	private readonly readyDurationMs = 2200;
 	private readonly goDurationMs = 1500;
@@ -163,6 +175,9 @@ export default class Game {
 	private attackTarget: WatermelonState | null = null;
 	private readonly attackApproachPadding = 6;
 	private readonly attackTriggerDistance = 16;
+	private commentUpBoostUntil = 0;
+	private commentDownBoostUntil = 0;
+	private readonly commentBoostDurationMs = 1200;
 
 	constructor(options: GameOptions = {}) {
 		this.onReady = options.onReady;
@@ -239,6 +254,35 @@ export default class Game {
 		}
 	};
 
+	private onBrowserInputUser = (event: Event) => {
+		if (!(event instanceof CustomEvent)) {
+			return;
+		}
+		const detail = event.detail as BrowserInputUserEventDetail | undefined;
+		if (!detail) {
+			return;
+		}
+		if (detail.source === "comment" && detail.kind === "key") {
+			const until = performance.now() + this.commentBoostDurationMs;
+			if (detail.key === "Up") {
+				this.commentUpBoostUntil = until;
+				this.commentDownBoostUntil = 0;
+			}
+			if (detail.key === "Down") {
+				this.commentDownBoostUntil = until;
+				this.commentUpBoostUntil = 0;
+			}
+		}
+		if (!detail.userName && !detail.userIconUrl) {
+			return;
+		}
+		this.commandHistoryItems.unshift(detail);
+		if (this.commandHistoryItems.length > this.commandHistoryMax) {
+			this.commandHistoryItems.length = this.commandHistoryMax;
+		}
+		this.renderCommandHistory();
+	};
+
 	private findWatermelonStateFromObject = (obj: THREE.Object3D) => {
 		let node: THREE.Object3D | null = obj;
 		while (node) {
@@ -311,6 +355,10 @@ export default class Game {
 			capture: true,
 			passive: false,
 		});
+		window.addEventListener(
+			"commander-browser-input-user",
+			this.onBrowserInputUser as EventListener,
+		);
 		this.createHUD();
 		this.setupUI();
 		await this.loadAssets();
@@ -346,6 +394,22 @@ export default class Game {
 		hud.setAttribute("hidden", "true");
 		this.hudElement = hud;
 		document.body.appendChild(hud);
+
+		if (!document.getElementById("commandHistory")) {
+			const history = document.createElement("aside");
+			history.id = "commandHistory";
+			history.setAttribute("hidden", "true");
+			const title = document.createElement("p");
+			title.id = "commandHistoryTitle";
+			title.textContent = "操作履歴";
+			const list = document.createElement("div");
+			list.id = "commandHistoryList";
+			history.append(title, list);
+			document.body.appendChild(history);
+			this.commandHistoryList = list;
+		} else {
+			this.commandHistoryList = document.getElementById("commandHistoryList") ?? undefined;
+		}
 	};
 
 	private setupUI = () => {
@@ -353,6 +417,66 @@ export default class Game {
 		this.updateWatermelonCounter();
 		this.timerText = document.getElementById("timerText");
 		this.updateTimerDisplay();
+		this.renderCommandHistory();
+	};
+
+	private renderCommandHistory = () => {
+		if (!this.commandHistoryList) {
+			return;
+		}
+		const history = document.getElementById("commandHistory");
+		if (history) {
+			if (this.commandHistoryItems.length === 0) {
+				history.setAttribute("hidden", "true");
+			} else {
+				history.removeAttribute("hidden");
+			}
+		}
+		this.commandHistoryList.innerHTML = "";
+		for (let i = this.commandHistoryItems.length - 1; i >= 0; i--) {
+			const item = this.commandHistoryItems[i];
+			const actionText = this.formatCommandHistoryAction(item);
+			if (!actionText) {
+				continue;
+			}
+			const row = document.createElement("div");
+			row.className = "command-history-item";
+			const icon = document.createElement("img");
+			icon.className = "command-history-icon";
+			icon.alt = "";
+			icon.src = item.userIconUrl || "";
+			if (!item.userIconUrl) {
+				icon.style.visibility = "hidden";
+			}
+			const name = document.createElement("span");
+			name.className = "command-history-name";
+			name.textContent = item.userName || "unknown";
+			const action = document.createElement("span");
+			action.className = "command-history-action";
+			action.textContent = actionText;
+			row.append(icon, name, action);
+			this.commandHistoryList.appendChild(row);
+		}
+	};
+
+	private formatCommandHistoryAction = (
+		item: BrowserInputUserEventDetail,
+	): string => {
+		if (item.kind === "click") return "クリック";
+		switch (item.key) {
+			case "Left":
+				return "左";
+			case "Right":
+				return "右";
+			case "Up":
+				return "上";
+			case "Down":
+				return "下";
+			case "Space":
+				return "スペース";
+			default:
+				return "";
+		}
 	};
 
 	private updateTimerDisplay = () => {
@@ -910,6 +1034,8 @@ export default class Game {
 		this.swing.hit = false;
 		this.swing.canDealDamage = false;
 		this.swing.cooldown = 0;
+		this.commentUpBoostUntil = 0;
+		this.commentDownBoostUntil = 0;
 		this.swingAnimationHold = 0;
 		this.batPivot.rotation.x = this.swingRestAngle;
 		const spawnCount = 3;
@@ -1298,9 +1424,15 @@ export default class Game {
 			);
 		}
 
-		const downPressed =
-			(this.keyboard.isPressS() || this.keyboard.isPressDown()) &&
-			!(this.keyboard.isPressW() || this.keyboard.isPressUp());
+		const upPressed =
+			this.keyboard.isPressW() ||
+			this.keyboard.isPressUp() ||
+			performance.now() < this.commentUpBoostUntil;
+		const backwardPressed =
+			this.keyboard.isPressS() ||
+			this.keyboard.isPressDown() ||
+			performance.now() < this.commentDownBoostUntil;
+		const downPressed = backwardPressed && !upPressed;
 		if (downPressed && !this.prevPressDown) {
 			this.playerAngle = this.normalizeAngle(this.playerAngle + Math.PI);
 			this.isDownKeyHolding = true;
@@ -1332,13 +1464,13 @@ export default class Game {
 		} else if (this.attackTarget && !this.attackTarget.whole) {
 			this.attackTarget = null;
 		}
-		if (this.keyboard.isPressW() || this.keyboard.isPressUp()) {
+		if (upPressed) {
 			this.player.position.add(
 				forward.clone().multiplyScalar(this.playerSpeed * delta),
 			);
 			moved = true;
 		}
-		if (this.keyboard.isPressS() || this.keyboard.isPressDown()) {
+		if (backwardPressed) {
 			const direction = this.isDownKeyHolding ? 1 : -1;
 			this.player.position.add(
 				forward.clone().multiplyScalar(direction * this.playerSpeed * delta),
